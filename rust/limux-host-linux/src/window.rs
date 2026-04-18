@@ -2719,19 +2719,74 @@ fn install_workspace_row_interactions(
     }
 }
 
-#[allow(deprecated)]
 fn add_workspace(state: &State, _working_directory: Option<&str>) {
-    // Open a folder chooser dialog (using FileChooserDialog to avoid portal crashes)
-    let window: Option<gtk::Window> = {
-        let s = state.borrow();
-        s.stack
-            .root()
-            .and_then(|r| r.downcast::<gtk::Window>().ok())
+    let window = active_window(state);
+    let dialog = gtk::FileDialog::builder()
+        .title("Open Folder as Workspace")
+        .accept_label("Open")
+        .modal(true)
+        .build();
+
+    if let Some(home) = dirs::home_dir() {
+        let home_file = gtk::gio::File::for_path(&home);
+        dialog.set_initial_folder(Some(&home_file));
+    }
+
+    let state_for_native = state.clone();
+    let window_for_native = window.clone();
+    dialog.select_folder(
+        window.as_ref(),
+        None::<&gio::Cancellable>,
+        move |result| match result {
+            Ok(file) => {
+                create_workspace_from_file(&state_for_native, &file);
+            }
+            Err(err) if is_workspace_picker_cancel(&err) => {}
+            Err(err) => {
+                eprintln!(
+                    "limux: native workspace folder picker failed ({err}); falling back to legacy chooser"
+                );
+                show_legacy_workspace_folder_dialog(
+                    &state_for_native,
+                    window_for_native.as_ref(),
+                );
+            }
+        },
+    );
+}
+
+fn active_window(state: &State) -> Option<gtk::Window> {
+    let s = state.borrow();
+    s.stack
+        .root()
+        .and_then(|root| root.downcast::<gtk::Window>().ok())
+}
+
+fn create_workspace_from_file(state: &State, file: &gio::File) {
+    let Some(path) = file.path() else {
+        return;
     };
 
+    let path_str = path.to_string_lossy().to_string();
+    let folder_name = path
+        .file_name()
+        .map(|segment| segment.to_string_lossy().to_string())
+        .unwrap_or_else(|| path_str.clone());
+    create_workspace_with_folder(state, &folder_name, &path_str);
+}
+
+fn is_workspace_picker_cancel(err: &glib::Error) -> bool {
+    matches!(
+        err.kind::<gtk::DialogError>(),
+        Some(gtk::DialogError::Cancelled | gtk::DialogError::Dismissed)
+    )
+}
+
+#[allow(deprecated)]
+fn show_legacy_workspace_folder_dialog(state: &State, window: Option<&gtk::Window>) {
     let dialog = gtk::FileChooserDialog::new(
         Some("Open Folder as Workspace"),
-        window.as_ref(),
+        window,
         gtk::FileChooserAction::SelectFolder,
         &[
             ("Cancel", gtk::ResponseType::Cancel),
@@ -2740,7 +2795,6 @@ fn add_workspace(state: &State, _working_directory: Option<&str>) {
     );
     dialog.set_modal(true);
 
-    // Start in the home directory
     if let Some(home) = dirs::home_dir() {
         let home_file = gtk::gio::File::for_path(&home);
         let _ = dialog.set_current_folder(Some(&home_file));
@@ -2750,14 +2804,7 @@ fn add_workspace(state: &State, _working_directory: Option<&str>) {
     dialog.connect_response(move |dlg, response| {
         if response == gtk::ResponseType::Accept {
             if let Some(file) = dlg.file() {
-                if let Some(path) = file.path() {
-                    let path_str = path.to_string_lossy().to_string();
-                    let folder_name = path
-                        .file_name()
-                        .map(|f| f.to_string_lossy().to_string())
-                        .unwrap_or_else(|| path_str.clone());
-                    create_workspace_with_folder(&state, &folder_name, &path_str);
-                }
+                create_workspace_from_file(&state, &file);
             }
         }
         dlg.close();
