@@ -468,9 +468,31 @@ T6 ───────────────┘
 - **validation**: Quality gate is green. Smoke either passes against a live
   host or records a clear environment blocker. Only after this is the feature
   ready to ask for push approval.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+- 2026-05-03: Ran `cargo fmt`; it produced no file changes.
+- 2026-05-03: Targeted checks passed:
+  `cargo check -p limux-host-linux`;
+  `cargo test -p limux-cli`.
+- 2026-05-03: Initial sandboxed `./scripts/check.sh` failed only in
+  Unix-socket bind tests with `Operation not permitted`; reran the same
+  canonical gate outside the sandbox and it passed fully.
+- 2026-05-03: First headless smoke attempt found a real live-bridge routing
+  bug: `limux send --workspace claude` serialized the name as
+  `workspace_id=claude`, while the bridge only treated `name=claude` as a
+  name target. Fixed and committed as `c2345c9`.
+- 2026-05-03: Second headless smoke attempt passed dry-run agent-team, live
+  `agent-team --no-launch`, `list-workspaces`, by-name `surface.send_text`,
+  and by-name `notification.create`. The self-split proof stage created the
+  new pane but failed because the headless Xvfb host never produced a writable
+  Ghostty surface: host logs repeatedly said `limux: failed to create ghostty
+  surface`, and the RPC returned `pane.create command target surface ... never
+  became writable`.
+- 2026-05-03: Reran `./scripts/check.sh` outside the sandbox after the
+  by-name routing fix; it passed fully.
 - **files edited/created**:
+  - `agent-self-split-plan.md`
+  - `rust/limux-host-linux/src/control_bridge.rs`
 
 ## Parallel Execution Groups
 
