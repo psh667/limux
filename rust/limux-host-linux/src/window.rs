@@ -24,6 +24,9 @@ use crate::shortcut_config::{
 };
 use crate::split_tree::{self, SplitTreeContainer};
 
+const PANE_CREATE_COMMAND_READY_INTERVAL_MS: u64 = 50;
+const PANE_CREATE_COMMAND_READY_ATTEMPTS: u32 = 40;
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -134,6 +137,47 @@ fn pane_create_response_payload(
         "surface_type": surface.kind,
         "ok": true,
     })
+}
+
+fn send_pane_create_response_after_command(
+    pane_widget: gtk::Widget,
+    surface_id: String,
+    command: String,
+    response: serde_json::Value,
+    reply: std::sync::mpsc::Sender<Result<serde_json::Value, BridgeError>>,
+) {
+    let mut attempts = 0;
+    let mut reply = Some(reply);
+    let command = format!("{command}\n");
+
+    glib::timeout_add_local(
+        std::time::Duration::from_millis(PANE_CREATE_COMMAND_READY_INTERVAL_MS),
+        move || {
+            attempts += 1;
+
+            if let Some((matched_surface_id, handle)) =
+                pane::exact_terminal_handle_for_surface(&pane_widget, &surface_id)
+            {
+                if matched_surface_id == surface_id && handle.send_text(&command) {
+                    if let Some(reply) = reply.take() {
+                        let _ = reply.send(Ok(response.clone()));
+                    }
+                    return glib::ControlFlow::Break;
+                }
+            }
+
+            if attempts >= PANE_CREATE_COMMAND_READY_ATTEMPTS {
+                if let Some(reply) = reply.take() {
+                    let _ = reply.send(Err(BridgeError::internal(format!(
+                        "pane.create command target surface {surface_id} never became writable"
+                    ))));
+                }
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        },
+    );
 }
 
 fn normalize_workspace_handle(raw: &str) -> &str {
@@ -3418,12 +3462,22 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 return;
             };
 
-            let _ = request.command;
-            let _ = reply.send(Ok(pane_create_response_payload(
-                &resolved.workspace_id,
-                &workspace_name,
-                surface,
-            )));
+            let surface_id = surface.surface_id.clone();
+            let response =
+                pane_create_response_payload(&resolved.workspace_id, &workspace_name, surface);
+
+            if let Some(command) = request.command {
+                send_pane_create_response_after_command(
+                    new_pane.upcast(),
+                    surface_id,
+                    command,
+                    response,
+                    reply,
+                );
+                return;
+            }
+
+            let _ = reply.send(Ok(response));
         }
         ControlCommand::ListSurfaces { target, reply } => {
             let resolved = {

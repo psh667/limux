@@ -175,12 +175,15 @@ impl TerminalHandle {
     /// Inject text into the terminal surface for control-socket requests and
     /// drag/drop payloads. Ghostty treats this as pasted text, which matches
     /// the current control protocol semantics.
-    pub fn send_text(&self, text: &str) {
-        if let Some(surface) = *self.surface_cell.borrow() {
-            unsafe {
-                ghostty_surface_text(surface, text.as_ptr() as *const c_char, text.len());
-            }
+    pub fn send_text(&self, text: &str) -> bool {
+        let Some(surface) = *self.surface_cell.borrow() else {
+            return false;
+        };
+
+        unsafe {
+            ghostty_surface_text(surface, text.as_ptr() as *const c_char, text.len());
         }
+        true
     }
 
     pub fn send_key(&self, key: &str) -> bool {

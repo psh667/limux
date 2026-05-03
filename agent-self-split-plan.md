@@ -349,9 +349,27 @@ T6 ───────────────┘
   smoke command writes `$LIMUX_WORKSPACE_ID`, `$LIMUX_PANE_ID`, and
   `$LIMUX_SURFACE_ID` from inside the new pane and confirms they match the
   `pane.create` response rather than the source pane.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - 2026-05-03: Added exact-surface terminal handle lookup in `pane.rs` and
+    changed `TerminalHandle::send_text` to report whether the Ghostty surface is
+    currently writable.
+  - 2026-05-03: Wired live GTK `pane.create --command` to poll only the newly
+    returned `surface_id` for up to 2s, inject `<command>\n` when that exact
+    surface becomes writable, and fail the RPC if it never does. No broad
+    workspace/active-terminal fallback is used for this command path.
+  - 2026-05-03: Full live proof-file smoke remains for T8/T10; this task added
+    the exact-surface hook and unit coverage needed for that smoke to assert the
+    response `surface_id`.
 - **files edited/created**:
+  - `rust/limux-host-linux/src/pane.rs`
+  - `rust/limux-host-linux/src/terminal.rs`
+  - `rust/limux-host-linux/src/window.rs`
+- **evidence**:
+  - `cargo test -p limux-host-linux pane_create`
+  - `cargo test -p limux-host-linux surface_hint_matches_only_exact_surface_or_tab_id`
+  - `cargo check -p limux-host-linux`
+  - `git diff --check`
 
 ### T8: Add host behavior and end-to-end regression tests
 

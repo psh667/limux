@@ -657,6 +657,11 @@ fn composite_surface_id(pane_id: u32, tab_id: &str) -> String {
     format!("{pane_id}:{tab_id}")
 }
 
+fn surface_hint_matches(surface_id: &str, tab_id: &str, surface_hint: &str) -> bool {
+    let requested = normalize_surface_hint(surface_hint);
+    !requested.is_empty() && (requested == tab_id || requested == surface_id)
+}
+
 pub fn terminal_handle_for_surface(
     pane_widget: &gtk::Widget,
     surface_hint: Option<&str>,
@@ -691,6 +696,28 @@ pub fn terminal_handle_for_surface(
     }
 
     fallback
+}
+
+pub fn exact_terminal_handle_for_surface(
+    pane_widget: &gtk::Widget,
+    surface_hint: &str,
+) -> Option<(String, terminal::TerminalHandle)> {
+    let internals = find_pane_internals(pane_widget)?;
+    let pane_id = internals.pane_id;
+    let tab_state = internals.tab_state.borrow();
+
+    for entry in &tab_state.tabs {
+        let TabKind::Terminal { state } = &entry.kind else {
+            continue;
+        };
+
+        let full_surface_id = composite_surface_id(pane_id, &entry.id);
+        if surface_hint_matches(&full_surface_id, &entry.id, surface_hint) {
+            return Some((full_surface_id, state.handle.clone()));
+        }
+    }
+
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -3203,8 +3230,8 @@ mod tests {
     use super::{
         classify_content_drop_zone, content_drop_preview_rect, effective_drop_target_dimensions,
         is_localhost_input, next_active_after_tab_removal, normalize_browser_entry_input,
-        normalize_reorder_insert_index, pane_action_tooltip, ContentDropZone, TabDragPayload,
-        BROWSER_SEARCH_ENTRY_CSS_CLASS, BROWSER_SEARCH_ENTRY_CSS_CLASSES,
+        normalize_reorder_insert_index, pane_action_tooltip, surface_hint_matches, ContentDropZone,
+        TabDragPayload, BROWSER_SEARCH_ENTRY_CSS_CLASS, BROWSER_SEARCH_ENTRY_CSS_CLASSES,
         BROWSER_URL_ENTRY_CSS_CLASS, BROWSER_URL_ENTRY_CSS_CLASSES, HOST_ENTRY_CSS_CLASS, PANE_CSS,
         TAB_RENAME_ENTRY_CSS_CLASS, TAB_RENAME_ENTRY_CSS_CLASSES,
     };
@@ -3271,6 +3298,18 @@ mod tests {
             BROWSER_SEARCH_ENTRY_CSS_CLASSES,
             [HOST_ENTRY_CSS_CLASS, BROWSER_SEARCH_ENTRY_CSS_CLASS]
         );
+    }
+
+    #[test]
+    fn surface_hint_matches_only_exact_surface_or_tab_id() {
+        assert!(surface_hint_matches(
+            "42:tab-a",
+            "tab-a",
+            "surface:42:tab-a"
+        ));
+        assert!(surface_hint_matches("42:tab-a", "tab-a", "tab-a"));
+        assert!(!surface_hint_matches("42:tab-a", "tab-a", "42:tab-b"));
+        assert!(!surface_hint_matches("42:tab-a", "tab-a", ""));
     }
 
     #[test]
