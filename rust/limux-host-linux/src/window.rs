@@ -246,6 +246,173 @@ fn focused_ids_for_workspace(state: &State, workspace_id: &str) -> (Option<u32>,
     (Some(surface.pane_id), Some(surface.surface_id))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub(crate) enum PaneCreateDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl PaneCreateDirection {
+    #[allow(dead_code)]
+    pub(crate) fn from_str(raw: &str) -> Option<Self> {
+        match raw {
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            "up" => Some(Self::Up),
+            "down" => Some(Self::Down),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PaneCreateSplitPlacement {
+    pub(crate) orientation: gtk::Orientation,
+    pub(crate) new_pane_first: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub(crate) enum PaneCreateTargetError {
+    WorkspaceNotFound,
+    InvalidSurfaceId(String),
+    InvalidPaneId(u32),
+    NoPanes,
+}
+
+#[allow(dead_code)]
+pub(crate) struct ResolvedPaneCreateTarget {
+    pub(crate) workspace_id: String,
+    pub(crate) pane_id: u32,
+    pub(crate) pane_widget: gtk::Widget,
+    pub(crate) placement: PaneCreateSplitPlacement,
+}
+
+fn pane_create_split_placement(direction: PaneCreateDirection) -> PaneCreateSplitPlacement {
+    match direction {
+        PaneCreateDirection::Left => PaneCreateSplitPlacement {
+            orientation: gtk::Orientation::Horizontal,
+            new_pane_first: true,
+        },
+        PaneCreateDirection::Right => PaneCreateSplitPlacement {
+            orientation: gtk::Orientation::Horizontal,
+            new_pane_first: false,
+        },
+        PaneCreateDirection::Up => PaneCreateSplitPlacement {
+            orientation: gtk::Orientation::Vertical,
+            new_pane_first: true,
+        },
+        PaneCreateDirection::Down => PaneCreateSplitPlacement {
+            orientation: gtk::Orientation::Vertical,
+            new_pane_first: false,
+        },
+    }
+}
+
+fn normalize_surface_handle(raw: &str) -> &str {
+    raw.trim()
+        .strip_prefix("surface:")
+        .unwrap_or_else(|| raw.trim())
+}
+
+fn resolve_pane_create_source_id(
+    surface_id: Option<&str>,
+    pane_id: Option<u32>,
+    focused_pane_id: Option<u32>,
+    target_workspace_is_active: bool,
+    pane_ids: &[u32],
+    surface_to_pane: &[(&str, u32)],
+) -> Result<u32, PaneCreateTargetError> {
+    if pane_ids.is_empty() {
+        return Err(PaneCreateTargetError::NoPanes);
+    }
+
+    if let Some(surface_id) = surface_id {
+        let requested = normalize_surface_handle(surface_id);
+        return surface_to_pane
+            .iter()
+            .find(|(known_surface_id, _)| *known_surface_id == requested)
+            .map(|(_, pane_id)| *pane_id)
+            .ok_or_else(|| PaneCreateTargetError::InvalidSurfaceId(surface_id.to_string()));
+    }
+
+    if let Some(pane_id) = pane_id {
+        if pane_ids.contains(&pane_id) {
+            return Ok(pane_id);
+        }
+        return Err(PaneCreateTargetError::InvalidPaneId(pane_id));
+    }
+
+    if target_workspace_is_active {
+        if let Some(focused_pane_id) = focused_pane_id {
+            if pane_ids.contains(&focused_pane_id) {
+                return Ok(focused_pane_id);
+            }
+        }
+    }
+
+    pane_ids
+        .first()
+        .copied()
+        .ok_or(PaneCreateTargetError::NoPanes)
+}
+
+#[allow(dead_code)]
+pub(crate) fn resolve_pane_create_target(
+    state: &State,
+    target: &WorkspaceTarget,
+    surface_id: Option<&str>,
+    pane_id: Option<u32>,
+    direction: PaneCreateDirection,
+) -> Result<ResolvedPaneCreateTarget, PaneCreateTargetError> {
+    let (workspace_id, workspace_root, target_workspace_is_active) = {
+        let app_state = state.borrow();
+        let workspace_index = workspace_index_for_target(&app_state, target)
+            .ok_or(PaneCreateTargetError::WorkspaceNotFound)?;
+        let workspace = &app_state.workspaces[workspace_index];
+        (
+            workspace.id.clone(),
+            workspace.root.clone(),
+            workspace_index == app_state.active_idx,
+        )
+    };
+
+    let pane_summaries = pane::pane_summaries_for_root(&workspace_root);
+    let pane_ids = pane_summaries
+        .iter()
+        .map(|summary| summary.pane_id)
+        .collect::<Vec<_>>();
+    let surface_summaries = pane::surface_summaries_for_root(&workspace_root);
+    let surface_to_pane = surface_summaries
+        .iter()
+        .map(|surface| (surface.surface_id.as_str(), surface.pane_id))
+        .collect::<Vec<_>>();
+    let focused_pane_id = target_workspace_is_active
+        .then(|| focused_ids_for_workspace(state, &workspace_id).0)
+        .flatten();
+
+    let pane_id = resolve_pane_create_source_id(
+        surface_id,
+        pane_id,
+        focused_pane_id,
+        target_workspace_is_active,
+        &pane_ids,
+        &surface_to_pane,
+    )?;
+    let pane_widget = pane::pane_widget_for_root(&workspace_root, pane_id)
+        .ok_or(PaneCreateTargetError::InvalidPaneId(pane_id))?;
+
+    Ok(ResolvedPaneCreateTarget {
+        workspace_id,
+        pane_id,
+        pane_widget,
+        placement: pane_create_split_placement(direction),
+    })
+}
+
 fn pane_list_payload(state: &State, workspace: &Workspace) -> serde_json::Value {
     let (focused_pane_id, _) = focused_ids_for_workspace(state, &workspace.id);
     let panes = pane::pane_summaries_for_root(&workspace.root)
@@ -4658,14 +4825,16 @@ mod tests {
     use super::{
         build_window_css, clamp_workspace_insert_index_for_pinning, directional_neighbor_score,
         favorites_prefix_len, font_size_after_delta, ghostty_prefers_dark,
-        gtk_system_prefers_dark_from_raw, next_active_workspace_index, queue_session_save_request,
-        resolved_system_prefers_dark, sanitize_background_opacity,
-        shortcut_allowed_while_browser_find_active, shortcut_blocked_by_editable,
-        shortcut_command_from_key_event, shortcut_dispatch_propagation, tab_drag_workspace_seed,
-        use_opaque_window_background, workspace_drop_layout_path, workspace_notification_message,
-        Direction, EditableCaptureContext, NeighborScore, PaneBounds, PortalColorSchemePreference,
-        SessionSaveAccess, SessionSaveRequest, WorkspaceSeedSource, BASE_CSS, HOST_ENTRY_CSS_CLASS,
-        WORKSPACE_RENAME_ENTRY_CSS_CLASS, WORKSPACE_RENAME_ENTRY_CSS_CLASSES,
+        gtk_system_prefers_dark_from_raw, next_active_workspace_index, pane_create_split_placement,
+        queue_session_save_request, resolve_pane_create_source_id, resolved_system_prefers_dark,
+        sanitize_background_opacity, shortcut_allowed_while_browser_find_active,
+        shortcut_blocked_by_editable, shortcut_command_from_key_event,
+        shortcut_dispatch_propagation, tab_drag_workspace_seed, use_opaque_window_background,
+        workspace_drop_layout_path, workspace_notification_message, Direction,
+        EditableCaptureContext, NeighborScore, PaneBounds, PaneCreateDirection,
+        PaneCreateTargetError, PortalColorSchemePreference, SessionSaveAccess, SessionSaveRequest,
+        WorkspaceSeedSource, BASE_CSS, HOST_ENTRY_CSS_CLASS, WORKSPACE_RENAME_ENTRY_CSS_CLASS,
+        WORKSPACE_RENAME_ENTRY_CSS_CLASSES,
     };
     use crate::layout_state::{LayoutNodeState, PaneState, SplitOrientation, SplitState};
     use crate::shortcut_config::{
@@ -4788,6 +4957,96 @@ mod tests {
         assert_eq!(left_score.overlap, 0);
         assert_eq!(right_score.overlap, 100);
         assert!(right_score.has_overlap);
+    }
+
+    #[test]
+    fn pane_create_split_placement_maps_direction_to_orientation_and_order() {
+        assert_eq!(
+            pane_create_split_placement(PaneCreateDirection::Left),
+            super::PaneCreateSplitPlacement {
+                orientation: super::gtk::Orientation::Horizontal,
+                new_pane_first: true,
+            }
+        );
+        assert_eq!(
+            pane_create_split_placement(PaneCreateDirection::Right),
+            super::PaneCreateSplitPlacement {
+                orientation: super::gtk::Orientation::Horizontal,
+                new_pane_first: false,
+            }
+        );
+        assert_eq!(
+            pane_create_split_placement(PaneCreateDirection::Up),
+            super::PaneCreateSplitPlacement {
+                orientation: super::gtk::Orientation::Vertical,
+                new_pane_first: true,
+            }
+        );
+        assert_eq!(
+            pane_create_split_placement(PaneCreateDirection::Down),
+            super::PaneCreateSplitPlacement {
+                orientation: super::gtk::Orientation::Vertical,
+                new_pane_first: false,
+            }
+        );
+    }
+
+    #[test]
+    fn pane_create_source_prefers_surface_then_pane_then_active_focus_then_first_leaf() {
+        let panes = [10, 20, 30];
+        let surfaces = [("10:aaa", 10), ("20:bbb", 20)];
+
+        assert_eq!(
+            resolve_pane_create_source_id(
+                Some("surface:20:bbb"),
+                Some(10),
+                Some(30),
+                true,
+                &panes,
+                &surfaces,
+            ),
+            Ok(20)
+        );
+        assert_eq!(
+            resolve_pane_create_source_id(None, Some(10), Some(30), true, &panes, &surfaces),
+            Ok(10)
+        );
+        assert_eq!(
+            resolve_pane_create_source_id(None, None, Some(30), true, &panes, &surfaces),
+            Ok(30)
+        );
+        assert_eq!(
+            resolve_pane_create_source_id(None, None, Some(30), false, &panes, &surfaces),
+            Ok(10)
+        );
+    }
+
+    #[test]
+    fn pane_create_source_reports_invalid_surface_pane_and_empty_workspace() {
+        let panes = [10, 20];
+        let surfaces = [("10:aaa", 10)];
+
+        assert_eq!(
+            resolve_pane_create_source_id(
+                Some("missing"),
+                Some(10),
+                Some(20),
+                true,
+                &panes,
+                &surfaces,
+            ),
+            Err(PaneCreateTargetError::InvalidSurfaceId(
+                "missing".to_string()
+            ))
+        );
+        assert_eq!(
+            resolve_pane_create_source_id(None, Some(99), Some(20), true, &panes, &surfaces),
+            Err(PaneCreateTargetError::InvalidPaneId(99))
+        );
+        assert_eq!(
+            resolve_pane_create_source_id(None, None, None, true, &[], &[]),
+            Err(PaneCreateTargetError::NoPanes)
+        );
     }
 
     #[test]

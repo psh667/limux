@@ -1541,6 +1541,14 @@ pub fn pane_summaries_for_root(root: &gtk::Widget) -> Vec<PaneSummary> {
         .collect()
 }
 
+#[allow(dead_code)]
+pub(crate) fn pane_widget_for_root(root: &gtk::Widget, pane_id: u32) -> Option<gtk::Widget> {
+    pane_internals_for_root(root)
+        .into_iter()
+        .find(|internals| internals.pane_id == pane_id)
+        .map(|internals| internals.pane_outer.clone().upcast())
+}
+
 pub fn surface_summaries_for_root(root: &gtk::Widget) -> Vec<SurfaceSummary> {
     let mut surfaces = Vec::new();
 
@@ -1551,18 +1559,19 @@ pub fn surface_summaries_for_root(root: &gtk::Widget) -> Vec<SurfaceSummary> {
         for entry in &tab_state.tabs {
             let selected = active_tab
                 .map(|current| current == entry.id)
-                .unwrap_or_else(|| tab_state.tabs.first().is_some_and(|first| first.id == entry.id));
+                .unwrap_or_else(|| {
+                    tab_state
+                        .tabs
+                        .first()
+                        .is_some_and(|first| first.id == entry.id)
+                });
             let (kind, cwd, uri) = match &entry.kind {
-                TabKind::Terminal { state } => (
-                    "terminal".to_string(),
-                    state.cwd.borrow().clone(),
-                    None,
-                ),
-                TabKind::Browser { state } => (
-                    "browser".to_string(),
-                    None,
-                    state.uri.borrow().clone(),
-                ),
+                TabKind::Terminal { state } => {
+                    ("terminal".to_string(), state.cwd.borrow().clone(), None)
+                }
+                TabKind::Browser { state } => {
+                    ("browser".to_string(), None, state.uri.borrow().clone())
+                }
                 TabKind::Keybinds => ("keybinds".to_string(), None, None),
             };
             surfaces.push(SurfaceSummary {
