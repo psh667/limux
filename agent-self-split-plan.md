@@ -282,9 +282,22 @@ T6 ───────────────┘
 - **validation**: `pane.list` and `surface.list` include the new pane/surface
   immediately after `pane.create`; invalid workspace returns not found; invalid
   source pane/surface returns not found or invalid params consistently.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+- 2026-05-03: Implemented the live GTK `ControlCommand::CreatePane`
+  handler. It now resolves explicit source surface/pane targets through the
+  existing helper, splits via the normal `split_pane` path with persistence
+  enabled, and returns the new pane's active terminal surface IDs as the
+  canonical follow-up target.
+- 2026-05-03: Invalid workspace, source surface, source pane, and empty
+  workspace cases now route through bridge not-found/invalid-params errors
+  instead of the temporary not-implemented response.
+- 2026-05-03: Validation passed:
+  `cargo test -p limux-host-linux pane_create`;
+  `cargo check -p limux-host-linux`.
 - **files edited/created**:
+  - `agent-self-split-plan.md`
+  - `rust/limux-host-linux/src/window.rs`
 
 ### T6: Reject browser-pane fields for this terminal self-split feature
 

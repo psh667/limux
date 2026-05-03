@@ -10,7 +10,10 @@ use gtk4 as gtk;
 use libadwaita as adw;
 
 use crate::app_config;
-use crate::control_bridge::{ControlCommand, WorkspaceTarget};
+use crate::control_bridge::{
+    BridgeError, ControlCommand, PaneCreateDirection as BridgePaneCreateDirection, PaneCreateType,
+    WorkspaceTarget,
+};
 use crate::keybind_editor;
 use crate::layout_state::{
     self, AppSessionState, LayoutNodeState, LoadedSession, PaneState, WorkspaceState,
@@ -102,6 +105,35 @@ fn pane_ref(id: u32) -> String {
 
 fn surface_ref(id: &str) -> String {
     format!("surface:{id}")
+}
+
+fn pane_create_response_payload(
+    workspace_id: &str,
+    workspace_name: &str,
+    surface: pane::SurfaceSummary,
+) -> serde_json::Value {
+    let surface_id = surface.surface_id;
+    serde_json::json!({
+        "workspace_id": workspace_id,
+        "workspace_ref": workspace_ref(workspace_id),
+        "workspace": {
+            "id": workspace_id,
+            "ref": workspace_ref(workspace_id),
+            "workspace_id": workspace_id,
+            "workspace_ref": workspace_ref(workspace_id),
+            "title": workspace_name,
+            "name": workspace_name,
+        },
+        "title": workspace_name,
+        "name": workspace_name,
+        "pane_id": surface.pane_id.to_string(),
+        "pane_ref": pane_ref(surface.pane_id),
+        "surface_id": surface_id.clone(),
+        "surface_ref": surface_ref(&surface_id),
+        "surface_title": surface.title,
+        "surface_type": surface.kind,
+        "ok": true,
+    })
 }
 
 fn normalize_workspace_handle(raw: &str) -> &str {
@@ -268,6 +300,17 @@ impl PaneCreateDirection {
     }
 }
 
+impl From<BridgePaneCreateDirection> for PaneCreateDirection {
+    fn from(direction: BridgePaneCreateDirection) -> Self {
+        match direction {
+            BridgePaneCreateDirection::Left => Self::Left,
+            BridgePaneCreateDirection::Right => Self::Right,
+            BridgePaneCreateDirection::Up => Self::Up,
+            BridgePaneCreateDirection::Down => Self::Down,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PaneCreateSplitPlacement {
     pub(crate) orientation: gtk::Orientation,
@@ -358,6 +401,15 @@ fn resolve_pane_create_source_id(
         .first()
         .copied()
         .ok_or(PaneCreateTargetError::NoPanes)
+}
+
+fn pane_create_target_error(error: PaneCreateTargetError) -> BridgeError {
+    match error {
+        PaneCreateTargetError::WorkspaceNotFound => BridgeError::not_found("workspace not found"),
+        PaneCreateTargetError::InvalidSurfaceId(_) => BridgeError::not_found("surface not found"),
+        PaneCreateTargetError::InvalidPaneId(_) => BridgeError::not_found("pane not found"),
+        PaneCreateTargetError::NoPanes => BridgeError::not_found("pane not found"),
+    }
 }
 
 #[allow(dead_code)]
@@ -3300,9 +3352,77 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let _ = reply.send(Ok(result));
         }
         ControlCommand::CreatePane { request, reply } => {
-            let _ = request;
-            let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
-                "pane.create GTK handler not implemented",
+            if !matches!(request.pane_type, PaneCreateType::Terminal) {
+                let _ = reply.send(Err(BridgeError::invalid_params(
+                    "pane.create live GTK bridge supports type=terminal only",
+                )));
+                return;
+            }
+
+            let source_pane_id = request
+                .source_pane_id
+                .as_deref()
+                .and_then(parse_pane_handle);
+            if request.source_pane_id.is_some() && source_pane_id.is_none() {
+                let _ = reply.send(Err(BridgeError::invalid_params(
+                    "pane.create requires a valid pane_id",
+                )));
+                return;
+            }
+
+            let direction = PaneCreateDirection::from(request.direction);
+            let resolved = match resolve_pane_create_target(
+                state,
+                &request.target,
+                request.source_surface_id.as_deref(),
+                source_pane_id,
+                direction,
+            ) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    let _ = reply.send(Err(pane_create_target_error(error)));
+                    return;
+                }
+            };
+
+            let workspace_name = {
+                let app_state = state.borrow();
+                app_state
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == resolved.workspace_id)
+                    .map(|workspace| workspace.name.clone())
+            };
+            let Some(workspace_name) = workspace_name else {
+                let _ = reply.send(Err(BridgeError::not_found("workspace not found")));
+                return;
+            };
+
+            let new_pane = split_pane(
+                state,
+                &resolved.workspace_id,
+                &resolved.pane_widget,
+                resolved.placement.orientation,
+                SplitPaneOptions {
+                    initial_state: None,
+                    skip_default_tab: false,
+                    new_pane_first: resolved.placement.new_pane_first,
+                    persist: true,
+                },
+            );
+
+            let Some(surface) = pane::active_surface_summary(&new_pane) else {
+                let _ = reply.send(Err(BridgeError::internal(
+                    "pane.create did not produce a terminal surface",
+                )));
+                return;
+            };
+
+            let _ = request.command;
+            let _ = reply.send(Ok(pane_create_response_payload(
+                &resolved.workspace_id,
+                &workspace_name,
+                surface,
             )));
         }
         ControlCommand::ListSurfaces { target, reply } => {
