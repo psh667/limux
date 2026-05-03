@@ -1153,6 +1153,21 @@ fn build_agents_md(peers: &[(String, String, String, String)], cwd: &str) -> Str
          agent's own terminal.\n\n",
     );
 
+    out.push_str("## Spawning another terminal agent\n\n");
+    out.push_str(
+        "To split your own pane and launch a peer agent in the new terminal,\n\
+         run:\n\n",
+    );
+    out.push_str("```bash\n");
+    out.push_str("limux new-pane --direction right --command claude\n");
+    out.push_str("```\n\n");
+    out.push_str(
+        "`new-pane` reads `LIMUX_WORKSPACE_ID`, `LIMUX_SURFACE_ID`, and\n\
+         `LIMUX_PANE_ID`, so it splits your current pane even if GTK focus has\n\
+         moved elsewhere. Live GTK self-spawn currently supports terminal\n\
+         panes only; browser pane creation is deferred.\n\n",
+    );
+
     out.push_str("## Policies (edit these freely)\n\n");
     out.push_str(
         "- If a peer is silent for more than 60 seconds, re-send with `reply-to` = your last id.\n",
@@ -2546,6 +2561,8 @@ mod agent_team_tests {
         assert!(md.contains("limux notify"));
         assert!(md.contains("LIMUX_WORKSPACE_ID"));
         assert!(md.contains("LIMUX_SURFACE_ID"));
+        assert!(md.contains("limux new-pane --direction right --command claude"));
+        assert!(md.contains("Live GTK self-spawn currently supports terminal"));
     }
 }
 

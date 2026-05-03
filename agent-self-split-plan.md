@@ -431,9 +431,27 @@ T6 ───────────────┘
 - **validation**: Docs no longer claim `surface.send_key` is missing; README
   shows an agent self-spawn example; smoke script contains a deterministic
   `new-pane` check.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+- 2026-05-03: Updated `docs/cmux-parity-plan.md` so live bridge support now
+  lists terminal `pane.create`, `surface.send_key`, and the remaining
+  `surface.read_text` gap accurately.
+- 2026-05-03: Added self-split instructions to the generated runtime
+  `AGENTS.md` template in `build_agents_md`, including the
+  `limux new-pane --direction right --command claude` path and the
+  terminal-only live GTK caveat.
+- 2026-05-03: Extended `scripts/xvfb-smoke-test.sh` with a deterministic
+  self-split stage that runs `new-pane --command`, waits for a proof file,
+  captures the spawned terminal's `LIMUX_*` values, and compares them against
+  the JSON `pane.create` response.
+- 2026-05-03: Validation passed:
+  `cargo test -p limux-cli agent_team_tests`;
+  `bash -n scripts/xvfb-smoke-test.sh`.
 - **files edited/created**:
+  - `agent-self-split-plan.md`
+  - `docs/cmux-parity-plan.md`
+  - `rust/limux-cli/src/main.rs`
+  - `scripts/xvfb-smoke-test.sh`
 
 ### T10: Final verification and push decision
 

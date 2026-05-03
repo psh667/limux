@@ -12,13 +12,16 @@ Limux has **two control servers**:
    routes a narrow subset of methods to the GTK main loop. Supports
    `system.ping`, `system.identify`, `workspace.{current,list,create,
    select,rename,close}`, `pane.list`, `pane.surfaces`, `surface.list`,
-   `surface.send_text`, and `notification.create`. It still does **NOT**
-   support `surface.read_text`, `surface.send_key`, or any browser commands.
+   `pane.create` for terminal self-spawn, `surface.send_text`,
+   `surface.send_key`, and `notification.create`. It still does **NOT**
+   support `surface.read_text` or any browser commands.
 
 When the GUI is running, the CLI targets the bridge via the runtime
-socket. `list-panes` / `list-panels` now work against the running host,
-but `read-screen` and key-level injection still error out — those remain
-the main blocker for richer Codex↔Claude workflows.
+socket. `list-panes` / `list-panels`, terminal `new-pane --command ...`,
+text injection, and key-level injection now work against the running host.
+`read-screen` still errors out — that remains the main blocker for richer
+Codex↔Claude review loops where one agent needs to inspect another agent's
+screen programmatically.
 
 ## Delivery strategy (revised)
 
@@ -37,9 +40,8 @@ variants that interrogate the live state. The cleanest path:
 - Specific methods that need GTK side-effects (send_text, create_surface,
   notification.create) remain as `ControlCommand` variants.
 
-Remaining work unblocks `surface.read_text` and `surface.send_key`
-against the live GUI — i.e. the last missing pieces for agents to read
-each other's screens and do deterministic key-level control.
+Remaining work unblocks `surface.read_text` against the live GUI — i.e. the
+last missing piece for agents to read each other's screens.
 
 **Shipped so far (in 6b8eb1a and follow-up bridge work):**
 
@@ -50,15 +52,20 @@ each other's screens and do deterministic key-level control.
 - `pane.list`, `pane.surfaces`, and `surface.list` now route on the live
   GTK bridge, so agents can discover peer panes/surfaces in a running
   Limux window.
+- `surface.send_key` now routes to the exact terminal surface when provided,
+  so agents can send deterministic key-level control such as Ctrl-C.
+- `pane.create` now routes through the GTK bridge for terminal panes. From
+  inside an agent terminal, `limux new-pane --direction right --command claude`
+  uses `LIMUX_WORKSPACE_ID`, `LIMUX_SURFACE_ID`, and `LIMUX_PANE_ID` to split
+  the caller's pane, create a new terminal, and launch the command there.
 
 **Still open (priority order):**
 
 - `surface.read_text` — letting an agent read a peer's scrollback /
   current output (biggest unlock for real Codex↔Claude review loops)
-- `surface.send_key` — key-level injection (arrow keys, Ctrl-C, etc.)
 
-These are the last blockers before Codex can ask Claude "what's on your
-screen?" programmatically — everything else on the roadmap is polish.
+This is the last blocker before Codex can ask Claude "what's on your screen?"
+programmatically — everything else on the roadmap is polish.
 
 ### Phase 3 — `limux notify` + GUI toast/sidebar integration ✅
 `ControlCommand::CreateNotification` wired through the bridge into

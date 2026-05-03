@@ -28,6 +28,7 @@ command -v xvfb-run >/dev/null || {
   exit 2
 }
 command -v cargo >/dev/null || { echo "FAIL: cargo missing"; exit 2; }
+command -v sed >/dev/null || { echo "FAIL: sed missing"; exit 2; }
 
 # --- 2. Build -------------------------------------------------------------
 if [ "$PROFILE" = "release" ]; then
@@ -189,17 +190,67 @@ else
   exit 1
 fi
 
-# --- 9. Stage 6: hook translators end-to-end ------------------------------
+# --- 9. Stage 6: self-split pane.create + command injection ----------------
 echo
-echo "== stage 6: claude-hook event translation =="
+echo "== stage 6: pane.create self-split with exact-surface command =="
+SELF_SPLIT_PROOF="$DEMO_DIR/self-split-proof"
+SELF_SPLIT_ENV="$DEMO_DIR/self-split-env"
+SELF_SPLIT_CMD="printf split-ok > '$SELF_SPLIT_PROOF'; printf '%s\n%s\n%s\n' \"\$LIMUX_WORKSPACE_ID\" \"\$LIMUX_PANE_ID\" \"\$LIMUX_SURFACE_ID\" > '$SELF_SPLIT_ENV'"
+
+"$LIMUX_CLI" --json new-pane \
+  --workspace claude \
+  --direction right \
+  --command "$SELF_SPLIT_CMD" \
+  2>&1 | tee "$LOG_DIR/stage6.json"
+
+RESPONSE_WORKSPACE="$(sed -n 's/.*"workspace_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage6.json" | head -1)"
+RESPONSE_PANE="$(sed -n 's/.*"pane_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage6.json" | head -1)"
+RESPONSE_SURFACE="$(sed -n 's/.*"surface_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage6.json" | head -1)"
+
+[ -n "$RESPONSE_WORKSPACE" ] || { echo "FAIL: pane.create response missing workspace_id"; exit 1; }
+[ -n "$RESPONSE_PANE" ] || { echo "FAIL: pane.create response missing pane_id"; exit 1; }
+[ -n "$RESPONSE_SURFACE" ] || { echo "FAIL: pane.create response missing surface_id"; exit 1; }
+
+for _ in $(seq 1 50); do
+  if [ -f "$SELF_SPLIT_PROOF" ] && [ -f "$SELF_SPLIT_ENV" ]; then
+    break
+  fi
+  sleep 0.1
+done
+
+[ -f "$SELF_SPLIT_PROOF" ] || { echo "FAIL: self-split command proof file missing"; exit 1; }
+[ "$(cat "$SELF_SPLIT_PROOF")" = "split-ok" ] || { echo "FAIL: self-split proof file has unexpected content"; exit 1; }
+[ -f "$SELF_SPLIT_ENV" ] || { echo "FAIL: self-split env file missing"; exit 1; }
+
+ENV_WORKSPACE="$(sed -n '1p' "$SELF_SPLIT_ENV")"
+ENV_PANE="$(sed -n '2p' "$SELF_SPLIT_ENV")"
+ENV_SURFACE="$(sed -n '3p' "$SELF_SPLIT_ENV")"
+
+[ "$ENV_WORKSPACE" = "$RESPONSE_WORKSPACE" ] || {
+  echo "FAIL: spawned pane LIMUX_WORKSPACE_ID ($ENV_WORKSPACE) did not match response ($RESPONSE_WORKSPACE)"
+  exit 1
+}
+[ "$ENV_PANE" = "$RESPONSE_PANE" ] || {
+  echo "FAIL: spawned pane LIMUX_PANE_ID ($ENV_PANE) did not match response ($RESPONSE_PANE)"
+  exit 1
+}
+[ "$ENV_SURFACE" = "$RESPONSE_SURFACE" ] || {
+  echo "FAIL: spawned pane LIMUX_SURFACE_ID ($ENV_SURFACE) did not match response ($RESPONSE_SURFACE)"
+  exit 1
+}
+echo "stage 6: OK (self-split command ran with fresh LIMUX_* env)"
+
+# --- 10. Stage 7: hook translators end-to-end -----------------------------
+echo
+echo "== stage 7: claude-hook event translation =="
 if echo '{"hook_event_name":"Notification","message":"hello from smoke"}' \
   | LIMUX_WORKSPACE_ID="" "$LIMUX_CLI" claude-hook 2>&1 \
-  | tee "$LOG_DIR/stage6.txt"; then
-  echo "stage 6: OK (claude-hook accepted JSON on stdin)"
+  | tee "$LOG_DIR/stage7.txt"; then
+  echo "stage 7: OK (claude-hook accepted JSON on stdin)"
 else
   # claude-hook legitimately errors without a workspace target — that's
   # a pass-through error, not a bridge regression. Surface the output.
-  echo "stage 6: claude-hook returned non-zero (check output)"
+  echo "stage 7: claude-hook returned non-zero (check output)"
 fi
 
 echo
