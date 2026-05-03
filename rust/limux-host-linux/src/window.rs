@@ -3299,6 +3299,12 @@ fn handle_control_command(state: &State, command: ControlCommand) {
 
             let _ = reply.send(Ok(result));
         }
+        ControlCommand::CreatePane { request, reply } => {
+            let _ = request;
+            let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
+                "pane.create GTK handler not implemented",
+            )));
+        }
         ControlCommand::ListSurfaces { target, reply } => {
             let resolved = {
                 let app_state = state.borrow();

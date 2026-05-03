@@ -27,6 +27,7 @@ const METHODS: &[&str] = &[
     "workspace.close",
     "pane.list",
     "pane.surfaces",
+    "pane.create",
     "surface.list",
     "surface.send_text",
     "surface.send_key",
@@ -115,6 +116,10 @@ pub enum ControlCommand {
         pane_id: Option<String>,
         reply: mpsc::Sender<BridgeResult>,
     },
+    CreatePane {
+        request: CreatePaneRequest,
+        reply: mpsc::Sender<BridgeResult>,
+    },
     ListSurfaces {
         target: WorkspaceTarget,
         reply: mpsc::Sender<BridgeResult>,
@@ -170,6 +175,7 @@ impl ControlCommand {
             | Self::ListWorkspaces { reply }
             | Self::ListPanes { reply, .. }
             | Self::ListPaneSurfaces { reply, .. }
+            | Self::CreatePane { reply, .. }
             | Self::ListSurfaces { reply, .. }
             | Self::CreateWorkspace { reply, .. }
             | Self::SelectWorkspace { reply, .. }
@@ -288,6 +294,21 @@ fn optional_handle(
     Ok(None)
 }
 
+fn optional_ref_handle(
+    params: &Map<String, Value>,
+    keys: &[&str],
+    prefix: &str,
+) -> Result<Option<String>, BridgeError> {
+    optional_handle(params, keys).map(|handle| {
+        handle.map(|handle| {
+            handle
+                .strip_prefix(prefix)
+                .unwrap_or(handle.as_str())
+                .to_string()
+        })
+    })
+}
+
 fn optional_index(params: &Map<String, Value>, key: &str) -> Result<Option<usize>, BridgeError> {
     let Some(value) = params.get(key) else {
         return Ok(None);
@@ -365,8 +386,8 @@ fn parse_create_pane_request(
 
     Ok(CreatePaneRequest {
         target: parse_optional_workspace_target(params, true)?,
-        source_pane_id: optional_handle(params, &["pane_id"])?,
-        source_surface_id: optional_handle(params, &["surface_id"])?,
+        source_pane_id: optional_ref_handle(params, &["pane_id"], "pane:")?,
+        source_surface_id: optional_ref_handle(params, &["surface_id"], "surface:")?,
         direction,
         pane_type,
         command: optional_string(params, &["command"]),
@@ -444,6 +465,14 @@ fn handle_method(
                 },
                 rx,
             )
+        }
+        "pane.create" | "new-pane" => {
+            let request = match parse_create_pane_request(params) {
+                Ok(request) => request,
+                Err(error) => return error_response(id, error),
+            };
+            let (reply, rx) = mpsc::channel();
+            (ControlCommand::CreatePane { request, reply }, rx)
         }
         "surface.list" | "list-panels" => {
             let target = match parse_optional_workspace_target(params, true) {
@@ -773,7 +802,7 @@ mod tests {
         let params = json!({
             "workspace_id": 7,
             "surface_id": "surface:11",
-            "pane_id": "12",
+            "pane_id": "pane:12",
             "direction": "left",
             "type": "terminal",
             "command": "claude"
@@ -782,7 +811,7 @@ mod tests {
             .expect("pane.create request should parse");
 
         assert_eq!(request.target, WorkspaceTarget::Handle("7".to_string()));
-        assert_eq!(request.source_surface_id, Some("surface:11".to_string()));
+        assert_eq!(request.source_surface_id, Some("11".to_string()));
         assert_eq!(request.source_pane_id, Some("12".to_string()));
         assert_eq!(request.direction, PaneCreateDirection::Left);
         assert_eq!(request.pane_type, PaneCreateType::Terminal);
@@ -813,5 +842,46 @@ mod tests {
         let error = parse_create_pane_request(url.as_object().expect("object params"))
             .expect_err("url is browser-only");
         assert_eq!(error.code, INVALID_PARAMS_CODE);
+    }
+
+    #[test]
+    fn pane_create_route_queues_create_pane_command() {
+        let response = dispatch_request(
+            r#"{"id":1,"method":"pane.create","params":{"name":"claude","surface_id":"surface:4:tab","direction":"down","command":"codex"}}"#,
+            &|command| match command {
+                ControlCommand::CreatePane { request, reply } => {
+                    assert_eq!(request.target, WorkspaceTarget::Name("claude".to_string()));
+                    assert_eq!(request.source_surface_id, Some("4:tab".to_string()));
+                    assert_eq!(request.direction, PaneCreateDirection::Down);
+                    assert_eq!(request.command, Some("codex".to_string()));
+                    let _ = reply.send(Ok(json!({
+                        "pane_id": "9",
+                        "pane_ref": "pane:9",
+                        "surface_id": "9:tab",
+                        "surface_ref": "surface:9:tab"
+                    })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+
+        assert_eq!(response.error, None);
+        let result = response.result.expect("pane.create should return a result");
+        assert_eq!(result["pane_ref"], "pane:9");
+        assert_eq!(result["surface_ref"], "surface:9:tab");
+    }
+
+    #[test]
+    fn pane_create_route_rejects_invalid_params_before_dispatch() {
+        let response = dispatch_request(
+            r#"{"id":1,"method":"new-pane","params":{"direction":"diagonal"}}"#,
+            &|command| panic!("invalid pane.create should not dispatch: {command:?}"),
+        );
+
+        assert_eq!(response.result, None);
+        assert_eq!(
+            response.error.as_ref().map(|error| error.code),
+            Some(INVALID_PARAMS_CODE)
+        );
     }
 }

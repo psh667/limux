@@ -207,9 +207,27 @@ T6 ───────────────┘
 - **validation**: Bridge parser unit coverage proves `pane.create` is no
   longer reported as unknown method; invalid direction/type/browser fields fail
   before reaching GTK; raw IDs and `pane:` / `surface:` refs are accepted.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+- 2026-05-03: Added `pane.create` to live bridge capabilities and routed
+  `pane.create` / `new-pane` into `ControlCommand::CreatePane` with a reply
+  sender.
+- 2026-05-03: Parser now strips `pane:` and `surface:` prefixes from
+  source-pane IDs while continuing to accept raw IDs. Workspace parsing uses
+  `allow_name=true` via the shared `parse_create_pane_request` path.
+- 2026-05-03: Added bridge route tests proving valid `pane.create` dispatches
+  a `CreatePane` command, invalid direction rejects before dispatch, and
+  existing parser contract tests cover invalid type/browser/url fields.
+- 2026-05-03: Added a temporary GTK handler arm that returns
+  `pane.create GTK handler not implemented` so the crate remains exhaustive
+  and buildable until T5 wires the real split/create behavior.
+- 2026-05-03: Validation passed:
+  `cargo test -p limux-host-linux pane_create`;
+  `cargo check -p limux-host-linux`.
 - **files edited/created**:
+  - `agent-self-split-plan.md`
+  - `rust/limux-host-linux/src/control_bridge.rs`
+  - `rust/limux-host-linux/src/window.rs`
 
 ### T4: Extend CLI `new-pane` with source targeting and `--command`
 
