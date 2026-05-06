@@ -34,7 +34,9 @@ jobs:
       - name: Install Zig
         run: |
           ZIG_VERSION=0.15.2
-          curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
+          curl --fail --location --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 \
+            "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+            -o /tmp/zig.tar.xz
           tar -xf /tmp/zig.tar.xz -C /tmp
           echo "/tmp/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
 
@@ -84,9 +86,10 @@ jobs:
         run: ./scripts/package.sh "${{ steps.version.outputs.version }}"
 
       - name: Upload packages to release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.version.outputs.version }}
           files: |
             dist/*
         env:
