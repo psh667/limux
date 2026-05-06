@@ -197,7 +197,7 @@ fn parse_global_args() -> Result<GlobalOptions> {
 
 fn print_help() {
     println!(
-        "limux CLI\n\nUsage: limux [--socket <path>] [--json] [--id-format refs|both|uuids] <command> [args...]\n\nCommon commands:\n  identify [--workspace <id|ref>] [--surface <id|ref>]\n  list-panels [--workspace <id|ref>]\n  list-panes [--workspace <id|ref>]\n  list-workspaces\n  surface-health [--workspace <id|ref>]\n  send [--workspace <id|ref>] [--surface <id|ref>] <text>\n  send-key [--workspace <id|ref>] [--surface <id|ref>] <key>\n  new-workspace [--cwd <path>] [--command <text>]\n  close-workspace --workspace <id|ref>\n  sidebar-state --workspace <id|ref>\n  new-surface [--workspace <id|ref>]\n  new-pane [--workspace <id|ref>] [--pane <id|ref>] [--surface <id|ref>] [--direction <left|right|up|down>] [--type <terminal|browser>] [--command <text>] [--url <url>]\n      Live GTK self-spawn currently supports terminal panes only; browser panes remain deferred.\n  rename-workspace [--workspace <id|ref>] <title>\n  rename-window [--workspace <id|ref>] <title>\n  rename-tab [--workspace <id|ref>] [--tab <id|ref>] <title>\n  read-screen [--workspace <id|ref>] [--surface <id|ref>] [--scrollback] [--lines <n>]\n  capture-pane (alias of read-screen)\n  tab-action --action <name> [--workspace <id|ref>] [--tab <id|ref>] [--title <text>] [--url <url>]\n  browser [--surface <id|ref>|<surface>] <subcommand> ...\n\nAgent integrations:\n  notify [--workspace <id|ref>] [--subtitle <text>] [--body <text>] <title>\n  claude-hook | opencode-hook | gemini-hook --event <name> [--subtitle <text>] [--body <text>] [--title <text>]\n  agent-team [--agents codex,claude[,opencode,gemini]] [--cwd <path>] [--no-launch] [--dry-run]\n      Spawns one workspace per agent, launches each CLI inside it, and writes\n      AGENTS.md describing the <agent-msg> XML protocol so peers can talk via\n      `limux send --workspace <peer-name> <envelope>`.\n"
+        "limux CLI\n\nUsage: limux [--socket <path>] [--json] [--id-format refs|both|uuids] <command> [args...]\n\nCommon commands:\n  identify [--workspace <id|ref>] [--surface <id|ref>]\n  list-panels [--workspace <id|ref>]\n  list-panes [--workspace <id|ref>]\n  list-workspaces\n  surface-health [--workspace <id|ref>]\n  send [--workspace <id|ref>] [--surface <id|ref>] <text>\n  send-key [--workspace <id|ref>] [--surface <id|ref>] <key>\n  new-workspace [--cwd <path>] [--command <text>]\n  close-workspace --workspace <id|ref>\n  sidebar-state --workspace <id|ref>\n  new-surface [--workspace <id|ref>]\n  new-pane [--workspace <id|ref>] [--pane <id|ref>] [--surface <id|ref>] [--direction <left|right|up|down>] [--type <terminal|browser>] [--command <text>] [--url <url>]\n      Live GTK self-spawn currently supports terminal panes only; browser panes remain deferred.\n  rename-workspace [--workspace <id|ref>] <title>\n  rename-window [--workspace <id|ref>] <title>\n  rename-tab [--workspace <id|ref>] [--tab <id|ref>] <title>\n  read-screen [--workspace <id|ref>] [--surface <id|ref>] [--scrollback] [--lines <n>]\n  capture-pane (alias of read-screen)\n  tab-action --action <name> [--workspace <id|ref>] [--tab <id|ref>] [--title <text>] [--url <url>]\n  browser [--surface <id|ref>|<surface>] <subcommand> ...\n\nAgent integrations:\n  notify [--workspace <id|ref>] [--subtitle <text>] [--body <text>] <title>\n  claude-hook | opencode-hook | gemini-hook --event <name> [--subtitle <text>] [--body <text>] [--title <text>]\n  agent-team [--agents codex,claude[,opencode,gemini]] [--cwd <path>] [--no-launch] [--dry-run]\n      Splits the active workspace into one pane per agent (caller's pane stays\n      as the orchestrator on the left, peers stack down the right), launches\n      each CLI in its pane, and writes AGENTS.md describing the <agent-msg>\n      XML protocol so peers can talk via\n      `limux send --surface <peer-surface-id> <envelope>`.\n"
     );
 }
 
@@ -313,6 +313,18 @@ fn trailing_title(args: &[String]) -> Option<String> {
             || arg == "--timeout-ms"
             || arg == "--name"
             || arg == "--out"
+            || arg == "--subtitle"
+            || arg == "--body"
+            || arg == "--message"
+            || arg == "--event"
+            || arg == "--agents"
+            || arg == "--selector"
+            || arg == "--text"
+            || arg == "--attr"
+            || arg == "--property"
+            || arg == "--value"
+            || arg == "--amount"
+            || arg == "--unset"
         {
             skip = true;
             continue;
@@ -789,6 +801,13 @@ fn hook_str<'a>(payload: &'a Value, keys: &[&str]) -> Option<&'a str> {
         .filter(|s| !s.is_empty())
 }
 
+fn parse_hook_event(args: &[String], payload: &Value) -> String {
+    parse_opt(args, "--event")
+        .or_else(|| trailing_title(args))
+        .or_else(|| hook_str(payload, &["hook_event_name", "event"]).map(str::to_owned))
+        .unwrap_or_else(|| "event".to_string())
+}
+
 /// Run an agent hook: read JSON from stdin, synthesize a notification.
 ///
 /// Args:
@@ -808,13 +827,8 @@ async fn run_agent_hook(client: &mut Client, agent: AgentKind, args: &[String]) 
         serde_json::from_str(raw).unwrap_or_else(|_| json!({ "raw": raw }))
     };
 
-    // Explicit event positional beats the JSON field.
-    let event = args
-        .iter()
-        .find(|a| !a.starts_with("--"))
-        .cloned()
-        .or_else(|| hook_str(&payload, &["hook_event_name", "event"]).map(str::to_owned))
-        .unwrap_or_else(|| "event".to_string());
+    // Explicit --event or positional event beats the JSON field.
+    let event = parse_hook_event(args, &payload);
 
     // Build a human-friendly title + body depending on event + agent.
     let agent_label = agent.label();
@@ -924,14 +938,15 @@ async fn run_new_workspace(client: &mut Client, args: &[String]) -> Result<Value
 // `limux agent-team` — spin up a multi-agent collaboration workspace.
 // ---------------------------------------------------------------------------
 //
-// Creates one workspace per requested agent (codex / claude / opencode /
-// gemini), launches each agent's CLI inside it, captures the workspace IDs,
-// and seeds an AGENTS.md in the shared cwd describing the XML-tagged
-// message protocol and the peer directory so agents can message each other.
+// Creates ONE workspace and one pane per requested agent (codex / claude /
+// opencode / gemini), launches each agent's CLI in its pane, captures the
+// pane/surface IDs, and seeds an AGENTS.md in the shared cwd describing the
+// XML-tagged message protocol and the peer directory so agents can message
+// each other.
 //
 // The protocol (codified in AGENTS.md):
 //   To send a message to a peer, run from any terminal:
-//     limux send --workspace <peer-name> \\
+//     limux send --surface <peer-surface-id> \\
 //       $'<agent-msg from="<me>" to="<peer>" ts="<iso-8601>">\\n...\\n</agent-msg>\\n'
 //
 // Peers read their own terminals normally — the text appears at the prompt.
@@ -973,97 +988,219 @@ async fn run_agent_team(client: &mut Client, args: &[String]) -> Result<Value> {
         .ok_or_else(|| anyhow!("agent-team: could not resolve --cwd"))?;
 
     // Optional: skip launching the CLIs (useful when the user wants to open
-    // the agents manually) — still creates the workspaces + AGENTS.md.
+    // the agents manually) — still splits the panes + writes AGENTS.md.
     let no_launch = args.iter().any(|a| a == "--no-launch");
     let dry_run = args.iter().any(|a| a == "--dry-run");
 
-    // Remember current workspace so we end up back where we started.
-    // Skip the RPC entirely on --dry-run so the CLI works without a host.
-    let original = if dry_run {
-        None
-    } else {
-        resolve_current_workspace(client).await.ok()
-    };
-
-    // Create one workspace per agent, record the resulting workspace IDs.
-    let mut peers: Vec<(String, String, String, String)> = Vec::new();
-    // tuple: (agent_name, workspace_name, workspace_id, launch_command)
-
+    // Resolve the agent list up front so --dry-run can build a deterministic
+    // peer table without touching the host.
+    let resolved: Vec<(String, &'static str, String)> = agents
+        .iter()
+        .filter_map(|agent| {
+            agent_launch_command(agent).map(|(name, launch)| (agent.clone(), name, launch))
+        })
+        .collect();
     for agent in &agents {
-        let Some((name, launch)) = agent_launch_command(agent) else {
+        if agent_launch_command(agent).is_none() {
             eprintln!("agent-team: unknown agent '{agent}', skipping");
-            continue;
-        };
-
-        let mut params = Map::new();
-        // Use the agent name as the workspace name so peers can address it
-        // via `limux send --workspace <name>`. WorkspaceTarget::Name now
-        // resolves on the bridge (allow_name=true).
-        params.insert("name".to_string(), Value::String(name.to_string()));
-        params.insert("cwd".to_string(), Value::String(cwd.clone()));
-        if !no_launch && !dry_run {
-            params.insert("command".to_string(), Value::String(launch.clone()));
         }
-
-        if dry_run {
-            peers.push((
-                agent.clone(),
-                name.to_string(),
-                format!("<dry-run-{name}>"),
-                launch,
-            ));
-            continue;
-        }
-
-        let created = client
-            .call("workspace.create", Value::Object(params))
-            .await
-            .with_context(|| format!("workspace.create failed for agent '{agent}'"))?;
-
-        let ws_id = get_string(&created, &["workspace_id", "id"])
-            .ok_or_else(|| anyhow!("agent-team: workspace.create for '{agent}' returned no id"))?;
-
-        peers.push((agent.clone(), name.to_string(), ws_id, launch));
     }
-
-    if peers.is_empty() {
+    if resolved.is_empty() {
         bail!("agent-team: no valid agents spawned");
     }
 
-    // Re-select the original workspace so the user lands back where they were.
-    if let Some(original) = original {
-        let _ = client
-            .call("workspace.select", json!({ "workspace_id": original }))
-            .await;
-    }
-
-    // Write AGENTS.md into the shared cwd, clobbering any existing file. The
-    // template is deterministic so subsequent invocations produce identical
-    // content (given the same agent list).
     let agents_md_path = std::path::Path::new(&cwd).join("AGENTS.md");
-    if !dry_run {
-        let body = build_agents_md(&peers, &cwd);
+
+    if dry_run {
+        let peers: Vec<(String, String, String, String)> = resolved
+            .iter()
+            .enumerate()
+            .map(|(i, (_, name, launch))| {
+                (
+                    name.to_string(),
+                    format!("<dry-run-pane-{i}>"),
+                    format!("<dry-run-surface-{name}>"),
+                    launch.clone(),
+                )
+            })
+            .collect();
+        let body = build_agents_md(
+            &peers,
+            &cwd,
+            "<active-workspace>",
+            "<dry-run-workspace>",
+            "<dry-run-orchestrator>",
+        );
         if let Err(err) = std::fs::write(&agents_md_path, body) {
             eprintln!(
                 "agent-team: failed to write {}: {err}",
                 agents_md_path.display()
             );
         }
+        return Ok(json!({
+            "ok": true,
+            "cwd": cwd,
+            "workspace_name": "<active-workspace>",
+            "workspace_id": Value::Null,
+            "orchestrator_surface_id": Value::Null,
+            "agents_md": agents_md_path.to_string_lossy(),
+            "dry_run": true,
+            "no_launch": no_launch,
+            "peers": peers
+                .iter()
+                .map(|(name, pane, surface, launch)| {
+                    json!({
+                        "agent": name,
+                        "pane_id": pane,
+                        "surface_id": surface,
+                        "launch_command": launch,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }));
+    }
+
+    // 1. Resolve the orchestrator's workspace + pane. Prefer LIMUX_* env (set
+    //    in every limux-spawned terminal) and fall back to the host's active
+    //    focus so callers from a regular shell still work.
+    let orchestrator_workspace = env::var("LIMUX_WORKSPACE_ID")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let orchestrator_surface_env = env::var("LIMUX_SURFACE_ID").ok().filter(|s| !s.is_empty());
+    let orchestrator_pane_env = env::var("LIMUX_PANE_ID").ok().filter(|s| !s.is_empty());
+
+    let workspace_id = match orchestrator_workspace.clone() {
+        Some(id) => id,
+        None => resolve_current_workspace(client)
+            .await
+            .context("agent-team: could not resolve active workspace; run from inside a limux pane or pass --workspace")?,
+    };
+
+    // 2. Discover the orchestrator pane's surface_id. If env didn't tell us,
+    //    use the focused/first surface in the workspace.
+    let surfaces = client
+        .call(
+            "surface.list",
+            json!({ "workspace_id": workspace_id.clone() }),
+        )
+        .await
+        .context("surface.list failed for active workspace")?;
+    let surface_rows = surfaces
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if surface_rows.is_empty() {
+        bail!("agent-team: active workspace has no surfaces");
+    }
+    let orchestrator_surface = orchestrator_surface_env.clone().unwrap_or_else(|| {
+        surface_rows
+            .iter()
+            .find(|row| row.get("focused").and_then(Value::as_bool) == Some(true))
+            .and_then(|row| get_string(row, &["surface_id"]))
+            .or_else(|| get_string(&surface_rows[0], &["surface_id"]))
+            .unwrap_or_default()
+    });
+    if orchestrator_surface.is_empty() {
+        bail!("agent-team: could not determine orchestrator surface");
+    }
+    let orchestrator_pane = orchestrator_pane_env.unwrap_or_else(|| {
+        surface_rows
+            .iter()
+            .find(|row| {
+                get_string(row, &["surface_id"]).as_deref() == Some(orchestrator_surface.as_str())
+            })
+            .and_then(|row| get_string(row, &["pane_id"]))
+            .unwrap_or_default()
+    });
+
+    // 3. Workspace name (for AGENTS.md header) — best-effort lookup.
+    let workspace_name = client
+        .call("workspace.list", json!({}))
+        .await
+        .ok()
+        .and_then(|v| v.get("workspaces").and_then(Value::as_array).cloned())
+        .and_then(|rows| {
+            rows.into_iter().find(|row| {
+                get_string(row, &["workspace_id", "id"]).as_deref() == Some(workspace_id.as_str())
+            })
+        })
+        .and_then(|row| get_string(&row, &["name", "title"]))
+        .unwrap_or_else(|| "active workspace".to_string());
+
+    // 4. Split a pane per agent. Layout: agent[0] splits RIGHT of orchestrator,
+    //    each subsequent agent splits DOWN of the previous agent — orchestrator
+    //    keeps its full height on the left, peers stack top-to-bottom on the right.
+    let mut peers: Vec<(String, String, String, String)> = Vec::new();
+    let mut parent_surface = orchestrator_surface.clone();
+
+    for (i, (_alias, name, launch)) in resolved.iter().enumerate() {
+        let direction = if i == 0 { "right" } else { "down" };
+
+        let mut params = Map::new();
+        params.insert(
+            "workspace_id".to_string(),
+            Value::String(workspace_id.clone()),
+        );
+        params.insert(
+            "surface_id".to_string(),
+            Value::String(parent_surface.clone()),
+        );
+        params.insert(
+            "direction".to_string(),
+            Value::String(direction.to_string()),
+        );
+        params.insert("type".to_string(), Value::String("terminal".to_string()));
+        if !no_launch {
+            params.insert("command".to_string(), Value::String(launch.clone()));
+        }
+
+        let created = client
+            .call("pane.create", Value::Object(params))
+            .await
+            .with_context(|| format!("pane.create failed for agent '{name}'"))?;
+        let pane_id = get_string(&created, &["pane_id"])
+            .ok_or_else(|| anyhow!("agent-team: pane.create for '{name}' returned no pane_id"))?;
+        let surface_id = get_string(&created, &["surface_id"]).ok_or_else(|| {
+            anyhow!("agent-team: pane.create for '{name}' returned no surface_id")
+        })?;
+
+        parent_surface = surface_id.clone();
+        peers.push((name.to_string(), pane_id, surface_id, launch.clone()));
+    }
+
+    // 5. Write AGENTS.md into the shared cwd, clobbering any existing file.
+    let body = build_agents_md(
+        &peers,
+        &cwd,
+        &workspace_name,
+        &workspace_id,
+        &orchestrator_surface,
+    );
+    if let Err(err) = std::fs::write(&agents_md_path, body) {
+        eprintln!(
+            "agent-team: failed to write {}: {err}",
+            agents_md_path.display()
+        );
     }
 
     Ok(json!({
         "ok": true,
         "cwd": cwd,
+        "workspace_name": workspace_name,
+        "workspace_id": workspace_id,
+        "orchestrator_pane_id": orchestrator_pane,
+        "orchestrator_surface_id": orchestrator_surface,
         "agents_md": agents_md_path.to_string_lossy(),
-        "dry_run": dry_run,
+        "dry_run": false,
         "no_launch": no_launch,
         "peers": peers
             .iter()
-            .map(|(agent, name, ws_id, launch)| {
+            .map(|(name, pane, surface, launch)| {
                 json!({
-                    "agent": agent,
-                    "workspace_name": name,
-                    "workspace_id": ws_id,
+                    "agent": name,
+                    "pane_id": pane,
+                    "surface_id": surface,
                     "launch_command": launch,
                 })
             })
@@ -1071,7 +1208,13 @@ async fn run_agent_team(client: &mut Client, args: &[String]) -> Result<Value> {
     }))
 }
 
-fn build_agents_md(peers: &[(String, String, String, String)], cwd: &str) -> String {
+fn build_agents_md(
+    peers: &[(String, String, String, String)],
+    cwd: &str,
+    workspace_name: &str,
+    workspace_id: &str,
+    orchestrator_surface: &str,
+) -> String {
     let mut out = String::new();
     out.push_str("# AGENTS.md — agent-to-agent message protocol\n\n");
     out.push_str(
@@ -1081,26 +1224,39 @@ fn build_agents_md(peers: &[(String, String, String, String)], cwd: &str) -> Str
          'Policies' section below; everything else is mechanical.\n\n",
     );
 
+    out.push_str(&format!(
+        "## Team workspace\n\n\
+         The orchestrator (the pane that ran `limux agent-team`) and all\n\
+         spawned peers share one workspace:\n\n\
+         - Workspace name: `{workspace_name}`\n\
+         - Workspace ID: `{workspace_id}`\n\
+         - Orchestrator surface: `{orchestrator_surface}`\n\
+         - Shared cwd: `{cwd}`\n\n",
+    ));
+
     out.push_str("## Peers in this team\n\n");
-    out.push_str("| Agent | Workspace name | Workspace ID | Launch command |\n");
-    out.push_str("|-------|----------------|--------------|----------------|\n");
-    for (agent, name, ws_id, launch) in peers {
+    out.push_str("| Agent | Pane | Surface | Launch command |\n");
+    out.push_str("|-------|------|---------|----------------|\n");
+    for (name, pane_id, surface_id, launch) in peers {
         out.push_str(&format!(
-            "| `{agent}` | `{name}` | `{ws_id}` | `{launch}` |\n"
+            "| `{name}` | `{pane_id}` | `{surface_id}` | `{launch}` |\n"
         ));
     }
     out.push('\n');
-    out.push_str(&format!("Shared cwd: `{cwd}`\n\n"));
+    out.push_str(
+        "The orchestrator is not in the table — message it back using its\n\
+         `Orchestrator surface` from the block above.\n\n",
+    );
 
     out.push_str("## How to send a message\n\n");
     out.push_str(
         "Messages use the `<agent-msg>` XML envelope so they're easy to\n\
          extract from the terminal scrollback. To send a message to a peer,\n\
-         run (from any shell, including the agent's own terminal — `limux`\n\
-         is on PATH):\n\n",
+         look up their `Surface` in the peers table above and run (from any\n\
+         shell, including the agent's own terminal — `limux` is on PATH):\n\n",
     );
     out.push_str("```bash\n");
-    out.push_str("limux send --workspace <peer-workspace-name> $'<agent-msg from=\"<me>\" to=\"<peer>\" id=\"<uuid>\" ts=\"<iso8601>\">\\n<body/>\\n</agent-msg>\\n'\n");
+    out.push_str("limux send --surface <peer-surface-id> $'<agent-msg from=\"<me>\" to=\"<peer>\" id=\"<uuid>\" ts=\"<iso8601>\">\\n<body/>\\n</agent-msg>\\n'\n");
     out.push_str("```\n\n");
     out.push_str(
         "The message appears at the peer's prompt as plain stdin, so the\n\
@@ -1120,7 +1276,7 @@ fn build_agents_md(peers: &[(String, String, String, String)], cwd: &str) -> Str
     out.push_str("```\n\n");
 
     out.push_str("Rules:\n");
-    out.push_str("- `from` / `to` MUST be one of the workspace names in the peers table.\n");
+    out.push_str("- `from` / `to` MUST be one of the agent names in the peers table.\n");
     out.push_str("- `id` is a fresh UUID (e.g. `uuidgen`); peers echo it in `reply-to`.\n");
     out.push_str("- `ts` is ISO-8601 UTC (`date -u +%Y-%m-%dT%H:%M:%SZ`).\n");
     out.push_str("- Inner tags are guidance, not required — `<request>` alone is fine.\n");
@@ -1129,7 +1285,7 @@ fn build_agents_md(peers: &[(String, String, String, String)], cwd: &str) -> Str
     out.push_str("### Replying\n\n");
     out.push_str("Reply with the envelope reversed and `reply-to` set to the original `id`:\n\n");
     out.push_str("```bash\n");
-    out.push_str("limux send --workspace codex $'<agent-msg from=\"claude\" to=\"codex\" id=\"<new-uuid>\" reply-to=\"<orig-uuid>\" ts=\"<iso8601>\">\\n<response>...</response>\\n</agent-msg>\\n'\n");
+    out.push_str("limux send --surface <orig-sender-surface-id> $'<agent-msg from=\"claude\" to=\"codex\" id=\"<new-uuid>\" reply-to=\"<orig-uuid>\" ts=\"<iso8601>\">\\n<response>...</response>\\n</agent-msg>\\n'\n");
     out.push_str("```\n\n");
 
     out.push_str("## Pinging the human\n\n");
@@ -1143,23 +1299,20 @@ fn build_agents_md(peers: &[(String, String, String, String)], cwd: &str) -> Str
 
     out.push_str("## Environment contract\n\n");
     out.push_str(
-        "Every terminal spawned by limux inherits:\n\
-         - `LIMUX_WORKSPACE_ID` — the current workspace's UUID\n\
-         - `LIMUX_SURFACE_ID` — the current pane:tab composite id\n\
+        "Every pane spawned by limux inherits:\n\
+         - `LIMUX_WORKSPACE_ID` — the team workspace's UUID\n\
+         - `LIMUX_SURFACE_ID` — this pane's surface id (this is your `from`)\n\
          - `LIMUX_PANE_ID`, `LIMUX_TAB_ID`\n\
          - `LIMUX_SOCKET` — the control socket path\n\n\
-         This means `limux identify`, `limux send`, and `limux notify` all\n\
-         auto-target the right thing with no flags needed from inside the\n\
-         agent's own terminal.\n\n",
+         This means `limux identify`, `limux send` (with `--surface`), and\n\
+         `limux notify` all auto-target the right thing with no flags needed\n\
+         from inside the agent's own terminal.\n\n",
     );
 
-    out.push_str("## Spawning another terminal agent\n\n");
-    out.push_str(
-        "To split your own pane and launch a peer agent in the new terminal,\n\
-         run:\n\n",
-    );
+    out.push_str("## Splitting your own pane\n\n");
+    out.push_str("If you need a scratch terminal next to you, split your own pane:\n\n");
     out.push_str("```bash\n");
-    out.push_str("limux new-pane --direction right --command claude\n");
+    out.push_str("limux new-pane --direction right --command bash\n");
     out.push_str("```\n\n");
     out.push_str(
         "`new-pane` reads `LIMUX_WORKSPACE_ID`, `LIMUX_SURFACE_ID`, and\n\
@@ -2331,18 +2484,22 @@ async fn execute_command(client: &mut Client, opts: &GlobalOptions) -> Result<Co
                     .get("agents_md")
                     .and_then(|v| v.as_str())
                     .unwrap_or("AGENTS.md");
+                let workspace = payload
+                    .get("workspace_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let peers = payload
                     .get("peers")
                     .and_then(|v| v.as_array())
                     .map(|arr| {
                         arr.iter()
-                            .filter_map(|p| p.get("workspace_name").and_then(|v| v.as_str()))
+                            .filter_map(|p| p.get("agent").and_then(|v| v.as_str()))
                             .collect::<Vec<_>>()
                             .join(", ")
                     })
                     .unwrap_or_default();
                 CommandOutput::Text(format!(
-                    "OK agent-team peers=[{peers}] agents_md={agents_md}"
+                    "OK agent-team workspace={workspace} peers=[{peers}] agents_md={agents_md}"
                 ))
             }
         }
@@ -2500,6 +2657,52 @@ async fn main() -> Result<()> {
 }
 
 #[cfg(test)]
+mod cli_arg_tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn notify_positional_title_skips_option_values() {
+        let args = args(&[
+            "--subtitle",
+            "needs review",
+            "--body",
+            "blocked",
+            "Input needed",
+        ]);
+
+        assert_eq!(trailing_title(&args).as_deref(), Some("Input needed"));
+    }
+
+    #[test]
+    fn hook_event_comes_from_json_after_option_values() {
+        let args = args(&["--workspace", "codex"]);
+        let payload = json!({ "hook_event_name": "Notification" });
+
+        assert_eq!(parse_hook_event(&args, &payload), "Notification");
+    }
+
+    #[test]
+    fn hook_event_prefers_explicit_event_flag() {
+        let args = args(&["--workspace", "codex", "--event", "Stop"]);
+        let payload = json!({ "hook_event_name": "Notification" });
+
+        assert_eq!(parse_hook_event(&args, &payload), "Stop");
+    }
+
+    #[test]
+    fn hook_event_accepts_positional_event_after_options() {
+        let args = args(&["--workspace", "codex", "Stop"]);
+        let payload = json!({ "hook_event_name": "Notification" });
+
+        assert_eq!(parse_hook_event(&args, &payload), "Stop");
+    }
+}
+
+#[cfg(test)]
 mod agent_team_tests {
     use super::*;
 
@@ -2530,38 +2733,50 @@ mod agent_team_tests {
         let peers = vec![
             (
                 "codex".to_string(),
-                "codex".to_string(),
-                "ws-1".to_string(),
+                "10".to_string(),
+                "10:tab-a".to_string(),
                 "codex".to_string(),
             ),
             (
                 "claude".to_string(),
-                "claude".to_string(),
-                "ws-2".to_string(),
+                "11".to_string(),
+                "11:tab-a".to_string(),
                 "claude".to_string(),
             ),
         ];
-        let md = build_agents_md(&peers, "/tmp/team");
+        let md = build_agents_md(
+            &peers,
+            "/tmp/team",
+            "active-ws",
+            "ws-uuid-123",
+            "9:terminal-orch",
+        );
 
         // Header & generation marker
         assert!(md.contains("AGENTS.md — agent-to-agent message protocol"));
         assert!(md.contains("Generated by `limux agent-team`"));
 
-        // Peer table rows
-        assert!(md.contains("| `codex` | `codex` | `ws-1` |"));
-        assert!(md.contains("| `claude` | `claude` | `ws-2` |"));
+        // Team workspace block
+        assert!(md.contains("Workspace name: `active-ws`"));
+        assert!(md.contains("Workspace ID: `ws-uuid-123`"));
+        assert!(md.contains("Orchestrator surface: `9:terminal-orch`"));
         assert!(md.contains("Shared cwd: `/tmp/team`"));
 
-        // Protocol envelope spec
+        // Peer table rows (Agent | Pane | Surface | Launch)
+        assert!(md.contains("| `codex` | `10` | `10:tab-a` | `codex` |"));
+        assert!(md.contains("| `claude` | `11` | `11:tab-a` | `claude` |"));
+
+        // Protocol envelope spec uses --surface, not --workspace
         assert!(md.contains("<agent-msg from=\"codex\" to=\"claude\""));
-        assert!(md.contains("limux send --workspace"));
+        assert!(md.contains("limux send --surface"));
+        assert!(!md.contains("limux send --workspace"));
         assert!(md.contains("reply-to"));
 
         // Notify + env contract
         assert!(md.contains("limux notify"));
         assert!(md.contains("LIMUX_WORKSPACE_ID"));
         assert!(md.contains("LIMUX_SURFACE_ID"));
-        assert!(md.contains("limux new-pane --direction right --command claude"));
+        assert!(md.contains("limux new-pane --direction right --command bash"));
         assert!(md.contains("Live GTK self-spawn currently supports terminal"));
     }
 }
