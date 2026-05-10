@@ -121,6 +121,12 @@ fn set_ghostty_runtime_env() {
     set_ghostty_runtime_env_for_exe(&exe_path);
 }
 
+fn sanitize_terminal_child_env() {
+    // Limux is often launched from another TUI agent session. NO_COLOR belongs
+    // to that launcher process, not to future shells inside this terminal app.
+    std::env::remove_var("NO_COLOR");
+}
+
 fn gtk_runtime_version() -> (u32, u32, u32) {
     unsafe {
         (
@@ -158,6 +164,7 @@ fn main() {
     // terminfo, and shell integration. Prefer Limux-bundled resources but
     // fall back to common system Ghostty install locations.
     set_ghostty_runtime_env();
+    sanitize_terminal_child_env();
 
     // WebKitGTK's bubblewrap sandbox requires unprivileged user namespaces,
     // which may not be available. Disable it to prevent crashes on launch.
@@ -235,6 +242,20 @@ mod tests {
             .expect("time went backwards")
             .as_nanos();
         std::env::temp_dir().join(format!("limux-{label}-{}-{nanos}", std::process::id()))
+    }
+
+    #[test]
+    fn sanitize_terminal_child_env_removes_no_color() {
+        let original = std::env::var_os("NO_COLOR");
+        std::env::set_var("NO_COLOR", "1");
+
+        sanitize_terminal_child_env();
+
+        assert!(std::env::var_os("NO_COLOR").is_none());
+        match original {
+            Some(value) => std::env::set_var("NO_COLOR", value),
+            None => std::env::remove_var("NO_COLOR"),
+        }
     }
 
     #[test]
