@@ -1084,8 +1084,11 @@ fn make_terminal_callbacks(
             if has_custom || title.is_empty() {
                 return;
             }
-            let display = if title.len() > 22 {
-                format!("{}…", &title[..21])
+            // title.len()은 바이트 수 — 멀티바이트 문자 중간에서 자르면 패닉이 발생한다.
+            // char_indices로 21번째 문자 경계를 찾아 안전하게 자른다.
+            let display = if title.chars().count() > 22 {
+                let cut = title.char_indices().nth(21).map(|(i, _)| i).unwrap_or(title.len());
+                format!("{}…", &title[..cut])
             } else {
                 title.to_string()
             };

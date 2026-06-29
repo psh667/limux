@@ -234,7 +234,7 @@ impl TerminalHandle {
             return false;
         };
 
-        let press = translate_key_event(
+        let mut press = translate_key_event(
             GHOSTTY_ACTION_PRESS,
             Some(self.gl_area.upcast_ref()),
             None,
@@ -250,6 +250,19 @@ impl TerminalHandle {
             0,
             modifier,
         );
+
+        // key_event_text() filters control characters (including \r for Return), so
+        // send_key via API always has text=null. Ghostty uses the text field to write
+        // to the PTY; without it, Return never reaches bash. Provide \r explicitly
+        // for Return/Enter so send-key works on plain shell prompts too.
+        let cr_text;
+        if matches!(
+            keyval,
+            gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::ISO_Enter
+        ) {
+            cr_text = CString::new("\r").unwrap();
+            press.text = cr_text.as_ptr();
+        }
 
         unsafe {
             ghostty_surface_key(surface, press);
@@ -413,6 +426,11 @@ fn request_terminal_focus(gl_area: &gtk::GLArea, had_focus: &Cell<bool>) {
 }
 
 fn refresh_surface_display(surface: ghostty_surface_t, gl_area: &gtk::GLArea) {
+    // split rebuild이 타이머 콜백보다 먼저 GLArea를 unrealize하면 ghostty_surface_refresh가
+    // GL 컨텍스트 없이 호출되어 SIGABRT가 발생한다. realized 상태일 때만 진행.
+    if !gl_area.is_realized() {
+        return;
+    }
     let alloc = gl_area.allocation();
     let w = alloc.width() as u32;
     let h = alloc.height() as u32;
